@@ -59,6 +59,7 @@ const player = {
     gravity: 0.8,
     velocity: 0,
     jumpForce: -18,
+    skyWalkJumpForce: -9,  // New: Half the regular jump force for sky walking
     isJumping: false,
     groundY: gameConfig.floorY - 80,
     jumpsRemaining: 2,
@@ -67,7 +68,8 @@ const player = {
     currentFrame: 0,    // Make sure this is initialized
     frameCount: 0,      // Make sure this is initialized
     opacity: 1,         // Make sure this is initialized
-    isPhasing: false    // Make sure this is initialized
+    isPhasing: false,    // Make sure this is initialized
+    skyWalkGravity: 0.6,   // New: Reduced gravity for sky walking
 };
 
 // Background setup (similar to Blahaj Runner)
@@ -121,8 +123,11 @@ const gameState = {
     currentTutorialMessage: 0,
     fadeSpeed: 0.02,
     showingMenu: false,
-    scrollPosition: 0,
-    scrollSpeed: 1.5
+    scrollPosition: -canvas.height/2,
+    scrollSpeed: 1.215,
+    hasPlayedBefore: localStorage.getItem('hasPlayedBefore') === 'true',
+    deathTime: 0,
+    canRestartAfterDeath: false
 };
 
 // Simplified PERKS system with only sky walk
@@ -208,7 +213,7 @@ const PERKS = {
         activate: (player) => {
             if (gameState.activePerk) return;
             
-            gameState.activePerk = "SLOW_SPAWN";
+            gameState.activePerk = "SLOW SPAWN";
             gameState.perkEndTime = Date.now() + 10000;
             
             // Store original spawn distance
@@ -436,7 +441,9 @@ function drawGame() {
         const milliseconds = timeLeft % 1000;
         
         if (timeLeft > 0) {
-            ctx.fillText(`${gameState.activePerk}: ${seconds}.${milliseconds.toString().padStart(3, '0')}s`, 20, gameConfig.ceilingY + 30);
+            // Replace underscores with spaces for display
+            const perkDisplayName = gameState.activePerk.replace(/_/g, ' ');
+            ctx.fillText(`${perkDisplayName}: ${seconds}.${milliseconds.toString().padStart(3, '0')}s`, 20, gameConfig.ceilingY + 30);
         } else {
             ctx.fillText('No Perks Active', 20, gameConfig.ceilingY + 30);
         }
@@ -444,7 +451,7 @@ function drawGame() {
         ctx.fillText('No Perks Active', 20, gameConfig.ceilingY + 30);
     }
 
-    // Draw player (with flipping for sky walk)
+    // Draw player with blessing effect
     const currentImage = player.currentAnimation === 'RUN' ? playerRunImage : playerJumpImage;
     const frameWidth = currentImage.width / SPRITE_FRAMES;
     
@@ -452,6 +459,16 @@ function drawGame() {
     
     if (player.isPhasing) {
         ctx.globalAlpha = player.opacity;
+    }
+    
+    // Apply blessing effect
+    if (gameState.blessingActive && Date.now() <= gameState.blessingEndTime) {
+        // Create shimmering effect using sine wave
+        const shimmerIntensity = Math.abs(Math.sin(Date.now() * 0.01)) * 0.3 + 0.7; // Values between 0.7 and 1.0
+        
+        // Apply golden tint
+        ctx.globalCompositeOperation = 'source-atop';
+        ctx.filter = `brightness(${shimmerIntensity * 130}%) sepia(50%) saturate(200%) hue-rotate(5deg)`;
     }
     
     // Apply vertical flip if sky walking
@@ -472,6 +489,25 @@ function drawGame() {
         player.width,
         player.height
     );
+    
+    // Add golden glow effect when blessing is active
+    if (gameState.blessingActive && Date.now() <= gameState.blessingEndTime) {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = 'rgba(255, 215, 0, 0.5)'; // Golden glow
+        ctx.drawImage(
+            currentImage,
+            player.currentFrame * frameWidth,
+            0,
+            frameWidth,
+            currentImage.height,
+            player.x,
+            player.y,
+            player.width,
+            player.height
+        );
+        ctx.shadowBlur = 0;
+    }
     
     ctx.restore();
 
@@ -638,16 +674,30 @@ function updateGame() {
 
     // Update player
     if (player.isJumping) {
-        player.velocity += player.gravity;
+        // Use different gravity based on sky walk state
+        const gravity = gameState.skyWalkActive ? player.skyWalkGravity : player.gravity;
+        const gravityDirection = gameState.skyWalkActive ? -1 : 1;
+        
+        player.velocity += gravity * gravityDirection;
         player.y += player.velocity;
 
-        // Handle floor collision
-        if (player.y >= player.groundY) {
-            player.y = player.groundY;
-            player.velocity = 0;
-            player.isJumping = false;
-            player.currentAnimation = 'RUN';
-            player.jumpsRemaining = player.maxJumps;  // Reset jumps when landing
+        // Handle ground/ceiling collision based on sky walk state
+        if (gameState.skyWalkActive) {
+            if (player.y <= player.groundY) {
+                player.y = player.groundY;
+                player.velocity = 0;
+                player.isJumping = false;
+                player.currentAnimation = 'RUN';
+                player.jumpsRemaining = player.maxJumps;
+            }
+        } else {
+            if (player.y >= player.groundY) {
+                player.y = player.groundY;
+                player.velocity = 0;
+                player.isJumping = false;
+                player.currentAnimation = 'RUN';
+                player.jumpsRemaining = player.maxJumps;
+            }
         }
     }
 
@@ -805,6 +855,15 @@ function handleInput(event) {
     if (event.code === 'Space') {
         event.preventDefault();
         
+        if (currentGameState === GameState.GAME_OVER) {
+            // Only allow restart after 1 second delay
+            if (Date.now() - gameState.deathTime >= 1000) {
+                currentGameState = GameState.MENU;
+                gameState.tutorialStep = 0;
+            }
+            return;
+        }
+        
         if (gameState.firstTimePlayer && !gameState.showingMenu) {
             // Only allow proceeding if the text has finished scrolling
             const lines = gameState.tutorialMessages[0].split('\n');
@@ -825,14 +884,12 @@ function handleInput(event) {
         } else if (currentGameState === GameState.PLAYING) {
             console.log("Attempting jump...");
             if (player.jumpsRemaining > 0) {
-                console.log(`Before jump - Y: ${player.y}, Velocity: ${player.velocity}`); // Debug
-                
-                player.velocity = player.jumpForce;  // Set negative velocity for upward movement
+                // Use different jump force based on sky walk state
+                const jumpForce = gameState.skyWalkActive ? player.skyWalkJumpForce : player.jumpForce;
+                player.velocity = gameState.skyWalkActive ? -jumpForce : jumpForce;
                 player.isJumping = true;
                 player.currentAnimation = 'JUMP';
                 player.jumpsRemaining--;
-                
-                console.log(`After jump - Y: ${player.y}, Velocity: ${player.velocity}`); // Debug
             }
         } else if (currentGameState === GameState.GAME_OVER) {
             currentGameState = GameState.MENU;
@@ -844,7 +901,7 @@ function handleInput(event) {
         event.preventDefault();
         gameState.firstTimePlayer = true;
         gameState.showingMenu = false;
-        gameState.scrollPosition = 0;
+        gameState.scrollPosition = -canvas.height/2;
         console.log('Tutorial triggered via hidden J key');
     }
 }
@@ -876,9 +933,10 @@ function checkCollision(player, obstacle) {
         if (gameState.blessingActive && Date.now() <= gameState.blessingEndTime) {
             return false;  // Immune to collision during blessing
         }
-        // Stop the clock when player dies
+        // Stop the clock when player dies and set death time
         if (gameState.isGameRunning) {
             gameState.gameEndTime = Date.now();
+            gameState.deathTime = Date.now(); // Record time of death
             gameState.isGameRunning = false;
         }
         return true; // Fatal collision
@@ -1030,30 +1088,53 @@ Promise.all([
 
 // Add game over screen
 function drawGameOver() {
-    // Create a fading white overlay
+    // Draw white background
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Calculate survival time from start to end (not current time)
-    const survivalTime = Math.floor((gameState.gameEndTime - gameState.gameStartTime) / 1000);
-    const minutes = Math.floor(survivalTime / 60);
-    const seconds = survivalTime % 60;
-    const timeString = `${minutes} minute${minutes !== 1 ? 's' : ''} and ${seconds} second${seconds !== 1 ? 's' : ''}`;
+    // Draw "GAME OVER"
+    ctx.font = '72px GameFont';
+    ctx.fillStyle = '#000000';
+    ctx.textAlign = 'center';
+    ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 3);
 
-    // Simple centered text layout
+    // Draw score
     ctx.font = '36px GameFont';
+    ctx.fillText(`Score: ${score}`, canvas.width / 2, canvas.height / 2);
+
+    // Calculate and display time alive
+    const timeAlive = gameState.gameEndTime - gameState.gameStartTime;
+    const aliveSeconds = Math.floor(timeAlive / 1000);
+    const aliveMilliseconds = timeAlive % 1000;
+    ctx.fillText(
+        `Time Alive: ${aliveSeconds}.${aliveMilliseconds.toString().padStart(3, '0')}s`, 
+        canvas.width / 2, 
+        canvas.height / 2 + 50  // Moved up since we removed high score
+    );
+
+    // Calculate time since death with milliseconds
+    const timeSinceDeath = Date.now() - gameState.deathTime;
+    const delayTime = 1000; // 1 second delay
+    
+    // Position for the countdown/restart text
+    ctx.font = '24px GameFont';
     ctx.fillStyle = '#000000';
     ctx.textAlign = 'center';
     
-    // Press to restart
-    ctx.fillText('PRESS SPACE TO RESTART', canvas.width / 2, canvas.height / 2 - 60);
-    
-    // Survival time
-    ctx.font = '24px GameFont';
-    ctx.fillText(`You were alive for: ${timeString}`, canvas.width / 2, canvas.height / 2);
-    
-    // Score and speed
-    ctx.fillText(`Score: ${score} | Speed: ${gameConfig.initialGameSpeed.toFixed(1)}`, canvas.width / 2, canvas.height / 2 + 40);
+    if (timeSinceDeath < delayTime) {
+        // Show countdown with milliseconds
+        const timeLeft = Math.max(0, delayTime - timeSinceDeath);
+        const seconds = Math.floor(timeLeft / 1000);
+        const milliseconds = timeLeft % 1000;
+        ctx.fillText(
+            `${seconds}.${milliseconds.toString().padStart(3, '0')}`, 
+            canvas.width / 2, 
+            canvas.height - 100
+        );
+    } else {
+        // Show restart prompt
+        ctx.fillText('Press SPACE to restart', canvas.width / 2, canvas.height - 100);
+    }
 }
 
 // Debug function to visualize hitboxes (optional)
@@ -1253,34 +1334,39 @@ function drawTutorialOverlay() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     if (!gameState.showingMenu) {
-        // Draw tutorial text with smaller font size (28px instead of 36px)
-        ctx.font = '28px GameFont';
+        // Draw tutorial text with 10% smaller font (25px instead of 28px)
+        ctx.font = '25px GameFont';
         ctx.fillStyle = '#000000';
         ctx.textAlign = 'center';
         
-        // Split the entire text into lines
+        // Split all text into lines
         const lines = gameState.tutorialMessages[0].split('\n');
         
-        // Draw each line with smaller spacing
+        // Draw each line
         lines.forEach((line, index) => {
-            if (line.trim() !== '') { // Only draw non-empty lines
+            if (line.trim() !== '') {
                 ctx.fillText(
                     line, 
                     canvas.width / 2, 
-                    (canvas.height + 200) - gameState.scrollPosition + (index * 32) // Reduced spacing to match smaller font
+                    canvas.height/2 - gameState.scrollPosition + (index * 30) // Adjusted spacing for smaller font
                 );
             }
         });
 
         // Calculate when text is halfway off screen
-        const totalTextHeight = lines.length * 32;
+        const totalTextHeight = lines.length * 30;
         const halfwayPoint = totalTextHeight / 2;
         
-        // Draw "Press SPACE to continue" only after text is halfway off screen
-        if (gameState.scrollPosition > halfwayPoint + canvas.height / 2) {
-            ctx.font = '24px GameFont';
+        if (gameState.scrollPosition > halfwayPoint) {
+            // Calculate position for "Press SPACE" text
+            let spaceTextY = canvas.height/2 - gameState.scrollPosition + (lines.length * 30) + 50;
+            
+            // Clamp the Y position to not go above middle of screen
+            spaceTextY = Math.max(canvas.height/2, spaceTextY);
+            
+            ctx.font = '22px GameFont'; // Slightly smaller than tutorial text
             ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            ctx.fillText('Press SPACE to continue', canvas.width / 2, canvas.height - 100);
+            ctx.fillText('Press SPACE to continue', canvas.width / 2, spaceTextY);
         }
     }
 }
@@ -1302,4 +1388,16 @@ function updateTutorial() {
         }
     }
 }
+
+// Make sure tutorial starts for new players
+function initGame() {
+    if (!gameState.hasPlayedBefore) {
+        gameState.firstTimePlayer = true;
+        gameState.showingMenu = false;
+        gameState.scrollPosition = -canvas.height/2;
+    }
+}
+
+// Call initGame when the game starts
+window.addEventListener('load', initGame);
 
