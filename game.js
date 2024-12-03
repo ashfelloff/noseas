@@ -127,7 +127,8 @@ const gameState = {
     scrollSpeed: 1.215,
     hasPlayedBefore: localStorage.getItem('hasPlayedBefore') === 'true',
     deathTime: 0,
-    canRestartAfterDeath: false
+    canRestartAfterDeath: false,
+    isInTransition: false
 };
 
 // Simplified PERKS system with only sky walk
@@ -135,41 +136,53 @@ const PERKS = {
     PHASE: {
         name: "PHASE",
         duration: 6000,
-        activate: (player) => {
+        activate: function(player) {
             if (gameState.activePerk) return;
             
-            player.isPhasing = true;
             gameState.activePerk = "PHASE";
-            player.opacity = 0.5;
-            gameState.perkEndTime = Date.now() + 6000;
+            gameState.perkEndTime = Date.now() + 5000;
+            player.isPhasing = true;
+            player.opacity = 0.5;  // Initial opacity
+            
+            // Start the phase effect
+            animatePhase(player);
             
             setTimeout(() => {
                 player.isPhasing = false;
                 player.opacity = 1;
                 endPerk();
-            }, 6000);
+            }, 5000);
         }
     },
     SKY_WALK: {
         name: "SKY_WALK",
         duration: 6000,
-        activate: (player) => {
+        activate: function(player) {
             if (gameState.activePerk) return;
             
-            gameState.activePerk = "SKY_WALK";
-            gameState.perkEndTime = Date.now() + 6000;
+            gameState.activePerk = "SKY WALK";
+            gameState.perkEndTime = Date.now() + 10000;
             
-            setTimeout(() => {
-                player.isInverted = true;
-                player.y = gameConfig.ceilingY;
-                player.groundY = gameConfig.ceilingY;
+            // Set transition immunity
+            gameState.isInTransition = true;
+            
+            // Start transition to sky walk
+            animateSkyWalkTransition(player, 'up', 500, () => {
                 gameState.skyWalkActive = true;
-            }, 500);
-            
-            setTimeout(() => {
-                endSkyWalk(player);
-                endPerk();
-            }, 6000);
+                player.isInverted = true;
+                gameState.isInTransition = false; // End immunity
+                
+                // Schedule return transition
+                setTimeout(() => {
+                    gameState.isInTransition = true; // Start immunity for return
+                    animateSkyWalkTransition(player, 'down', 500, () => {
+                        gameState.skyWalkActive = false;
+                        player.isInverted = false;
+                        gameState.isInTransition = false; // End immunity
+                        endPerk();
+                    });
+                }, 9500);
+            });
         }
     },
     SHRINK: {
@@ -185,26 +198,15 @@ const PERKS = {
             player.originalWidth = player.width;
             player.originalHeight = player.height;
             
-            // Calculate new position to keep feet on ground
-            const heightDifference = player.height * 0.5; // Since we're shrinking by 50%
-            
-            // Shrink player
-            player.width *= 0.5;
-            player.height *= 0.5;
-            
-            // Adjust Y position to keep feet on ground
-            player.groundY = gameConfig.floorY - player.height;
-            player.y = player.groundY;
-            
-            setTimeout(() => {
-                // Restore original size
-                player.width = player.originalWidth;
-                player.height = player.originalHeight;
-                // Readjust position for original size
-                player.groundY = gameConfig.floorY - player.height;
-                player.y = player.groundY;
-                endPerk();
-            }, 6000);
+            // Start shrink animation
+            animateShrink(player, 'shrink', 500, () => {
+                // After shrink completes, schedule grow animation
+                setTimeout(() => {
+                    animateShrink(player, 'grow', 500, () => {
+                        endPerk();
+                    });
+                }, 5000); // Start growing back 1 second before perk ends
+            });
         }
     },
     SLOW_SPAWN: {
@@ -303,21 +305,29 @@ class FadingTreasure {
 // Add array to track fading treasures
 let fadingTreasures = [];
 
-// Update obstacle types with text effect properties
+// Update obstacle types with floating properties
 const obstacleTypes = {
     BARREL: {
         width: 50,
         height: 50,
         speed: 3,
         image: barrelImage,
-        dangerous: true
+        dangerous: true,
+        bobAmount: 3,        // Pixels to float up/down (was 5)
+        bobSpeed: 0.015,     // Speed of floating (was 0.02)
+        rotationAmount: 0.1, // Maximum rotation in radians (was 0.15)
+        rotationSpeed: 0.01  // Speed of rotation (was 0.015)
     },
     CRATE: {
         width: 50,
         height: 50,
         speed: 3,
         image: crateImage,
-        dangerous: true
+        dangerous: true,
+        bobAmount: 4,        // Slightly different bob amount (was 6)
+        bobSpeed: 0.02,      // Slightly different speed (was 0.025)
+        rotationAmount: 0.08,// Slightly different rotation (was 0.12)
+        rotationSpeed: 0.012 // Slightly different rotation speed (was 0.018)
     },
     CHEST: {
         width: 50,
@@ -325,6 +335,7 @@ const obstacleTypes = {
         speed: 3,
         image: chestImage,
         dangerous: false,
+        type: 'CHEST',
         isPerk: true
     },
     ATTACK: {
@@ -335,8 +346,24 @@ const obstacleTypes = {
         dangerous: true,
         bobAmount: 3,
         bobSpeed: 0.015,
-        textEffects: ["Boo!", "Gyat!", "Arrrr!", "I don't have a booty!"],
-        textChance: 0.1
+        textEffects: [
+            "Boo!", 
+            "Gyat!", 
+            "Arrrr!", 
+            "I don't have a booty!",
+            "Spooky!",
+            "Beware!",
+            "Bwahaha!",
+            "Ghostly!",
+            "Fear me!",
+            "Eek!",
+            "Boo-tiful!",
+            "Phantom!",
+            "Haunt you!",
+            "Scared yet?",
+            "Woooo!"
+        ],
+        textChance: 0.2
     }
 };
 
@@ -451,7 +478,7 @@ function drawGame() {
         ctx.fillText('No Perks Active', 20, gameConfig.ceilingY + 30);
     }
 
-    // Draw player with blessing effect
+    // Draw player with blessing/sky walk effects
     const currentImage = player.currentAnimation === 'RUN' ? playerRunImage : playerJumpImage;
     const frameWidth = currentImage.width / SPRITE_FRAMES;
     
@@ -464,11 +491,25 @@ function drawGame() {
     // Apply blessing effect
     if (gameState.blessingActive && Date.now() <= gameState.blessingEndTime) {
         // Create shimmering effect using sine wave
-        const shimmerIntensity = Math.abs(Math.sin(Date.now() * 0.01)) * 0.3 + 0.7; // Values between 0.7 and 1.0
+        const shimmerIntensity = Math.abs(Math.sin(Date.now() * 0.01)) * 0.3 + 0.7;
         
         // Apply golden tint
         ctx.globalCompositeOperation = 'source-atop';
         ctx.filter = `brightness(${shimmerIntensity * 130}%) sepia(50%) saturate(200%) hue-rotate(5deg)`;
+    }
+    // Add sky walk light orange tint
+    else if (gameState.skyWalkActive) {
+        const shimmerIntensity = Math.abs(Math.sin(Date.now() * 0.01)) * 0.2 + 0.8;
+        ctx.globalCompositeOperation = 'source-atop';
+        ctx.filter = `brightness(${shimmerIntensity * 120}%) 
+                     saturate(150%) 
+                     hue-rotate(20deg) 
+                     sepia(30%)
+                     contrast(110%)`;
+        
+        // Add subtle orange glow
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = 'rgba(255, 165, 0, 0.4)';
     }
     
     // Apply vertical flip if sky walking
@@ -490,7 +531,7 @@ function drawGame() {
         player.height
     );
     
-    // Add golden glow effect when blessing is active
+    // Add glow effect for active effects
     if (gameState.blessingActive && Date.now() <= gameState.blessingEndTime) {
         ctx.globalCompositeOperation = 'source-over';
         ctx.shadowBlur = 15;
@@ -511,7 +552,7 @@ function drawGame() {
     
     ctx.restore();
 
-    // Draw obstacles with animation support
+    // Draw obstacles with haunted effects
     obstacles.forEach(obstacle => {
         if (obstacle && obstacle.image) {
             try {
@@ -520,7 +561,61 @@ function drawGame() {
                 if (obstacle.isPerk && gameState.activePerk) {
                     ctx.globalAlpha = 0.3;
                 }
+
+                // Calculate floating effect for barrels and crates
+                if (obstacle.type === 'BARREL' || obstacle.type === 'CRATE') {
+                    // Store original Y position if not set
+                    if (obstacle.startY === undefined) {
+                        obstacle.startY = obstacle.y;
+                    }
+                    
+                    // Calculate bob offset with gentler sine wave
+                    obstacle.bobOffset = Math.sin(Date.now() * obstacle.bobSpeed) * obstacle.bobAmount;
+                    obstacle.y = obstacle.startY + obstacle.bobOffset;
+                    
+                    // Apply haunted red tint with reduced intensity
+                    const shimmerIntensity = Math.abs(Math.sin(Date.now() * 0.01)) * 0.2 + 0.8;
+                    ctx.globalCompositeOperation = 'source-atop';
+                    ctx.filter = `brightness(${shimmerIntensity * 110}%) 
+                                 saturate(150%) 
+                                 hue-rotate(340deg) 
+                                 contrast(110%)`;
+                    
+                    // Add subtle red glow
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = 'rgba(255, 0, 0, 0.3)';
+                    
+                    // Calculate rotation with gentler sine wave
+                    const rotation = Math.sin(Date.now() * obstacle.rotationSpeed) * obstacle.rotationAmount;
+                    
+                    // Apply rotation around center of object
+                    ctx.translate(
+                        obstacle.x + obstacle.width / 2,
+                        obstacle.y + obstacle.height / 2
+                    );
+                    ctx.rotate(rotation);
+                    ctx.translate(
+                        -(obstacle.x + obstacle.width / 2),
+                        -(obstacle.y + obstacle.height / 2)
+                    );
+                }
                 
+                // Add ghost effects for ATTACK type
+                if (obstacle.type === 'ATTACK') {
+                    // Create more intense shimmering effect for ghosts
+                    const ghostShimmerIntensity = Math.abs(Math.sin(Date.now() * 0.01)) * 0.3 + 0.7;
+                    ctx.globalCompositeOperation = 'source-atop';
+                    ctx.filter = `brightness(${ghostShimmerIntensity * 130}%) 
+                                 saturate(200%) 
+                                 hue-rotate(320deg) 
+                                 contrast(120%)`;
+                    
+                    // Add stronger red glow for ghosts
+                    ctx.shadowBlur = 15;
+                    ctx.shadowColor = 'rgba(255, 0, 0, 0.5)';
+                }
+                
+                // Draw the obstacle
                 ctx.drawImage(
                     obstacle.image,
                     obstacle.x,
@@ -528,19 +623,22 @@ function drawGame() {
                     obstacle.width,
                     obstacle.height
                 );
-
-                // Draw text effect if applicable
-                if (obstacle.showText && obstacle.x < canvas.width / 2) {
-                    ctx.font = '20px GameFont';
-                    ctx.fillStyle = '#FF0000';  // Red color for text
-                    ctx.textAlign = 'center';
-                    ctx.fillText(obstacle.text, obstacle.x + obstacle.width / 2, obstacle.y - 10);
-                }
                 
                 ctx.restore();
             } catch (error) {
                 console.error('Error drawing obstacle:', error);
                 console.log('Obstacle data:', obstacle);
+            }
+        }
+    });
+
+    // Draw obstacles with animation support
+    obstacles.forEach(obstacle => {
+        if (obstacle.animated) {
+            obstacle.animationCounter++;
+            if (obstacle.animationCounter >= obstacle.frameSpeed) {
+                obstacle.animationCounter = 0;
+                obstacle.currentFrame = (obstacle.currentFrame + 1) % obstacle.frameCount;
             }
         }
     });
@@ -608,7 +706,71 @@ function drawGame() {
         ctx.shadowBlur = 0; // Reset shadow
     }
 
-    // Draw sky walk transition line if active
+    // Draw slow spawn effect if active
+    if (gameState.slowSpawnActive) {
+        ctx.save();
+        
+        // Calculate more pronounced shimmer intensity
+        const shimmerIntensity = Math.abs(Math.sin(Date.now() * 0.003)) * 0.5 + 0.3; // Increased range
+        
+        // Calculate time remaining
+        const timeRemaining = gameState.perkEndTime - Date.now();
+        const isEnding = timeRemaining < 3000; // Last 3 seconds
+        
+        // Add blinking when nearing end
+        let opacity = shimmerIntensity;
+        if (isEnding) {
+            const blinkRate = Math.sin(Date.now() * 0.01) * 0.5 + 0.5;
+            opacity *= blinkRate;
+        }
+        
+        // Create gradient from right side with more coverage
+        const gradient = ctx.createLinearGradient(
+            canvas.width * 0.6, 0,  // Start gradient earlier
+            canvas.width, 0
+        );
+        
+        gradient.addColorStop(0, 'rgba(255, 165, 0, 0)');
+        gradient.addColorStop(0.7, `rgba(255, 165, 0, ${opacity * 0.3})`);
+        gradient.addColorStop(1, `rgba(255, 165, 0, ${opacity})`);
+        
+        // Draw the gradient overlay with 'screen' blend mode for better visibility
+        ctx.fillStyle = gradient;
+        ctx.globalCompositeOperation = 'screen';
+        ctx.fillRect(canvas.width * 0.6, 0, canvas.width * 0.4, canvas.height);
+        
+        // Add more prominent vertical lines
+        const lineCount = 8;  // More lines
+        const lineWidth = 3;  // Thicker lines
+        const lineSpacing = (canvas.width * 0.4) / lineCount;
+        const lineOffset = (Date.now() * 0.05) % lineSpacing;
+        
+        ctx.beginPath();
+        for (let x = canvas.width * 0.6; x < canvas.width; x += lineSpacing) {
+            ctx.moveTo(x + lineOffset, 0);
+            ctx.lineTo(x + lineOffset, canvas.height);
+        }
+        ctx.strokeStyle = `rgba(255, 165, 0, ${opacity * 0.7})`; // More visible lines
+        ctx.lineWidth = lineWidth;
+        ctx.stroke();
+        
+        // Add a pulsing glow effect
+        ctx.globalCompositeOperation = 'screen';
+        const pulseIntensity = Math.sin(Date.now() * 0.004) * 0.3 + 0.7;
+        const glowGradient = ctx.createLinearGradient(
+            canvas.width * 0.7, 0,
+            canvas.width, 0
+        );
+        glowGradient.addColorStop(0, 'rgba(255, 165, 0, 0)');
+        glowGradient.addColorStop(1, `rgba(255, 165, 0, ${pulseIntensity * 0.3})`);
+        ctx.fillStyle = glowGradient;
+        ctx.fillRect(canvas.width * 0.7, 0, canvas.width * 0.3, canvas.height);
+        
+        ctx.restore();
+    }
+
+    // Draw sky walk transition line if active - DISABLED FOR NOW
+    /*
     if (gameState.skyWalkActive || (gameState.activePerk === "SKY_WALK")) {
         ctx.beginPath();
         ctx.moveTo(player.x + player.width / 2, gameConfig.ceilingY);  // Start at ceiling
@@ -617,6 +779,7 @@ function drawGame() {
         ctx.lineWidth = 2;
         ctx.stroke();
     }
+    */
 }
 
 function drawMenu() {
@@ -706,10 +869,10 @@ function updateGame() {
         const obstacle = obstacles[i];
         obstacle.x -= gameConfig.baseMovementSpeed * gameConfig.initialGameSpeed;
         
-        // Update bobbing animation for ATTACK type
-        if (obstacle.bobAmount) {
+        // Update bobbing animation for barrels and crates
+        if ((obstacle.type === 'BARREL' || obstacle.type === 'CRATE') && obstacle.startY !== undefined) {
             obstacle.bobOffset = Math.sin(Date.now() * obstacle.bobSpeed) * obstacle.bobAmount;
-            obstacle.y = obstacle.startY + obstacle.bobOffset;
+            // Don't update obstacle.y here, just track the offset
         }
         
         if (obstacle.x + obstacle.width < 0) {
@@ -718,16 +881,17 @@ function updateGame() {
             continue;
         }
 
+        // Check collision using actual positions
         if (checkCollision(player, obstacle)) {
-            if (obstacle.dangerous) {
+            if (obstacle.type === 'CHEST') {
+                handlePerkCollision(obstacle, i);
+            } else if (obstacle.dangerous) {
                 if (!gameState.isInPerkBuffer) {
                     currentGameState = GameState.GAME_OVER;
                     if (score > highScore) {
                         highScore = score;
                     }
                 }
-            } else if (obstacle.isPerk) {
-                handlePerkCollision(obstacle, i);
             }
         }
     }
@@ -777,22 +941,20 @@ function spawnObstacle() {
     }
     
     const newObstacle = {
+        type: type,
         x: canvas.width,
+        startY: gameConfig.floorY - obstacleTypes[type].height, // Store initial Y position
         y: gameConfig.floorY - obstacleTypes[type].height,
         width: obstacleTypes[type].width,
         height: obstacleTypes[type].height,
         image: obstacleTypes[type].image,
         dangerous: obstacleTypes[type].dangerous,
         isPerk: obstacleTypes[type].isPerk || false,
-        startY: gameConfig.floorY - obstacleTypes[type].height,
-        bobOffset: 0,
-        bobAmount: type === 'ATTACK' ? obstacleTypes[type].bobAmount : 0,
-        bobSpeed: type === 'ATTACK' ? obstacleTypes[type].bobSpeed : 0,
-        showText: type === 'ATTACK' && Math.random() < obstacleTypes[type].textChance,
-        text: type === 'ATTACK' ? 
-            obstacleTypes[type].textEffects[
-                Math.floor(Math.random() * obstacleTypes[type].textEffects.length)
-            ] : ''
+        bobAmount: obstacleTypes[type].bobAmount || 0,
+        bobSpeed: obstacleTypes[type].bobSpeed || 0,
+        rotationAmount: obstacleTypes[type].rotationAmount || 0,
+        rotationSpeed: obstacleTypes[type].rotationSpeed || 0,
+        bobOffset: 0
     };
     
     obstacles.push(newObstacle);
@@ -904,28 +1066,40 @@ function handleInput(event) {
         gameState.scrollPosition = -canvas.height/2;
         console.log('Tutorial triggered via hidden J key');
     }
+    else if (event.code === 'KeyX') {
+        if (gameState.firstTimePlayer && !gameState.showingMenu) {
+            // Skip tutorial
+            gameState.firstTimePlayer = false;
+            gameState.showingMenu = true;
+            currentGameState = GameState.MENU;
+            localStorage.setItem('hasPlayedBefore', 'true');
+        }
+    }
 }
 
 function checkCollision(player, obstacle) {
+    // Get actual obstacle position including bob offset
+    const obstacleY = obstacle.startY !== undefined ? 
+                      obstacle.startY + (obstacle.bobOffset || 0) : 
+                      obstacle.y;
+
     const hasCollided = (
         player.x < obstacle.x + obstacle.width &&
         player.x + player.width > obstacle.x &&
-        player.y < obstacle.y + obstacle.height &&
-        player.y + player.height > obstacle.y
+        player.y < obstacleY + obstacle.height &&
+        player.y + player.height > obstacleY
     );
 
     if (!hasCollided) return false;
 
-    // If player is phasing, ignore collisions
-    if (player.isPhasing) {
+    // If player is phasing or in transition, ignore collisions
+    if (player.isPhasing || gameState.isInTransition) {
         return false;
     }
 
-    // Handle chest/perk collisions first
-    if (obstacle.isPerk) {
-        const index = obstacles.indexOf(obstacle);
-        handlePerkCollision(obstacle, index);
-        return false;
+    // Handle chest/perk collisions
+    if (obstacle.type === 'CHEST') {
+        return true;
     }
 
     // Handle dangerous obstacles
@@ -933,13 +1107,12 @@ function checkCollision(player, obstacle) {
         if (gameState.blessingActive && Date.now() <= gameState.blessingEndTime) {
             return false;  // Immune to collision during blessing
         }
-        // Stop the clock when player dies and set death time
         if (gameState.isGameRunning) {
             gameState.gameEndTime = Date.now();
-            gameState.deathTime = Date.now(); // Record time of death
+            gameState.deathTime = Date.now();
             gameState.isGameRunning = false;
         }
-        return true; // Fatal collision
+        return true;
     }
 
     return false;
@@ -1016,6 +1189,10 @@ function resetGame() {
     if (player.originalWidth) {
         player.width = player.originalWidth;
         player.height = player.originalHeight;
+        player.groundY = gameConfig.floorY - player.height;
+        if (!player.isJumping) {
+            player.y = player.groundY;
+        }
     }
     
     // Reset spawn distance
@@ -1032,6 +1209,15 @@ function resetGame() {
     if (player.phaseBlinkInterval) {
         clearInterval(player.phaseBlinkInterval);
         player.phaseBlinkInterval = null;
+    }
+    
+    // Reset sky walk state and transition immunity
+    gameState.skyWalkActive = false;
+    gameState.isInTransition = false;
+    player.isInverted = false;
+    player.groundY = gameConfig.floorY - player.height;
+    if (!player.isJumping) {
+        player.y = player.groundY;
     }
 }
 
@@ -1334,7 +1520,7 @@ function drawTutorialOverlay() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     if (!gameState.showingMenu) {
-        // Draw tutorial text with 10% smaller font (25px instead of 28px)
+        // Draw tutorial text
         ctx.font = '25px GameFont';
         ctx.fillStyle = '#000000';
         ctx.textAlign = 'center';
@@ -1348,24 +1534,37 @@ function drawTutorialOverlay() {
                 ctx.fillText(
                     line, 
                     canvas.width / 2, 
-                    canvas.height/2 - gameState.scrollPosition + (index * 30) // Adjusted spacing for smaller font
+                    canvas.height/2 - gameState.scrollPosition + (index * 30)
                 );
             }
         });
 
-        // Calculate when text is halfway off screen
+        // Calculate total scroll duration and current progress
         const totalTextHeight = lines.length * 30;
+        const scrollProgress = gameState.scrollPosition / totalTextHeight;
+        
+        // Calculate opacity for "Press X to Skip"
+        // Start fading at 0.4 and complete fade by 0.6
+        const skipOpacity = scrollProgress < 0.4 ? 1 : 
+                          scrollProgress > 0.6 ? 0 : 
+                          1 - ((scrollProgress - 0.4) * 5); // Smooth fade over 0.2 duration
+
+        // Draw "Press X to Skip" with calculated opacity
+        ctx.font = '20px GameFont';
+        ctx.fillStyle = `rgba(255, 0, 0, ${skipOpacity})`;
+        ctx.textAlign = 'right';
+        ctx.fillText('Press X to Skip', canvas.width - 30, 40);
+
+        // Continue with existing space prompt code
         const halfwayPoint = totalTextHeight / 2;
         
         if (gameState.scrollPosition > halfwayPoint) {
-            // Calculate position for "Press SPACE" text
             let spaceTextY = canvas.height/2 - gameState.scrollPosition + (lines.length * 30) + 50;
-            
-            // Clamp the Y position to not go above middle of screen
             spaceTextY = Math.max(canvas.height/2, spaceTextY);
             
-            ctx.font = '22px GameFont'; // Slightly smaller than tutorial text
+            ctx.font = '22px GameFont';
             ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.textAlign = 'center';
             ctx.fillText('Press SPACE to continue', canvas.width / 2, spaceTextY);
         }
     }
@@ -1400,4 +1599,113 @@ function initGame() {
 
 // Call initGame when the game starts
 window.addEventListener('load', initGame);
+
+function animateShrink(player, direction, duration, callback) {
+    const startTime = Date.now();
+    const startWidth = player.width;
+    const startHeight = player.height;
+    const targetWidth = direction === 'shrink' ? player.originalWidth * 0.5 : player.originalWidth;
+    const targetHeight = direction === 'shrink' ? player.originalHeight * 0.5 : player.originalHeight;
+    
+    function update() {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        // Use easeInOutQuad for smooth transition
+        const eased = progress < 0.5
+            ? 2 * progress * progress
+            : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+        
+        // Update dimensions
+        player.width = startWidth + (targetWidth - startWidth) * eased;
+        player.height = startHeight + (targetHeight - startHeight) * eased;
+        
+        // Adjust Y position to keep feet on ground
+        player.groundY = gameConfig.floorY - player.height;
+        if (!player.isJumping) {
+            player.y = player.groundY;
+        }
+        
+        if (progress < 1) {
+            requestAnimationFrame(update);
+        } else {
+            if (callback) callback();
+        }
+    }
+    
+    requestAnimationFrame(update);
+}
+
+function animateSkyWalkTransition(player, direction, duration, callback) {
+    const startTime = Date.now();
+    const startY = player.y;
+    const targetY = direction === 'up' ? 
+        gameConfig.ceilingY : 
+        gameConfig.floorY - player.height;
+    
+    // Store original ground position
+    const originalGroundY = player.groundY;
+    
+    function update() {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        // Use easeInOutQuad for smooth transition
+        const eased = progress < 0.5
+            ? 2 * progress * progress
+            : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+        
+        // Update position
+        if (!player.isJumping) {
+            player.y = startY + (targetY - startY) * eased;
+            // Update ground reference during transition
+            player.groundY = direction === 'up' ?
+                originalGroundY + (gameConfig.ceilingY - originalGroundY) * eased :
+                gameConfig.ceilingY + (originalGroundY - gameConfig.ceilingY) * eased;
+        }
+        
+        if (progress < 1) {
+            requestAnimationFrame(update);
+        } else {
+            player.groundY = targetY;
+            if (!player.isJumping) {
+                player.y = targetY;
+            }
+            if (callback) callback();
+        }
+    }
+    
+    requestAnimationFrame(update);
+}
+
+function animatePhase(player) {
+    const startTime = Date.now();
+    const duration = 5000; // Total phase duration
+    const warningStart = 2000; // Start warning at 2 seconds remaining
+    
+    function update() {
+        if (!player.isPhasing) return;
+        
+        const timeElapsed = Date.now() - startTime;
+        const timeRemaining = duration - timeElapsed;
+        
+        // If in warning period, create blinking effect
+        if (timeRemaining <= warningStart) {
+            // Increase blink frequency as time runs out
+            const blinkFrequency = 5 + ((warningStart - timeRemaining) / warningStart) * 10;
+            const blinkValue = Math.sin(timeElapsed * (blinkFrequency / 1000) * Math.PI) * 0.5 + 0.5;
+            
+            // Blend between normal phase opacity and blink
+            player.opacity = 0.5 + (blinkValue * 0.5);
+        } else {
+            player.opacity = 0.5;
+        }
+        
+        if (timeElapsed < duration) {
+            requestAnimationFrame(update);
+        }
+    }
+    
+    requestAnimationFrame(update);
+}
 
